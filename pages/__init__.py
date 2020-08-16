@@ -2,7 +2,7 @@
 from components import Hello
 from mixt import html 
 
-def handler(request, **kwargs):
+def handler(**kwargs):
     return (
         <div>
             <Hello name="World"/>
@@ -11,6 +11,9 @@ def handler(request, **kwargs):
             </div>
             <div>
             <a href="/about">about</a>
+            </div>
+            <div>
+            <a href="/xyz">404</a>
             </div>
         </div>
     )

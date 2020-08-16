@@ -9,36 +9,54 @@ from inspect import iscoroutinefunction
 from starlette.applications import Starlette
 from starlette.responses import HTMLResponse
 from starlette.routing import Route
-
-from components import Hello, Layout, Document
+from components import Layout, Document, NotFound, Error
 
 
 class NotPageException(Exception):
     pass
 
 
-def response_decorator(fn,fetcher, layout, document):
+async def get_props(fetcher, req):
+    data = {}
+
+    if callable(fetcher):
+        # Func may not be async.
+        if iscoroutinefunction(fetcher):
+            data = await fetcher(req)
+        else:
+            data = fetcher(req)
+
+    return data.get("props", {})
+
+
+def render(fn, props):
+    res = fn(**props).to_string()
+    return HTMLResponse(res)
+
+
+def response_decorator(fn, fetcher, layout, document):
     async def inner(req):
-        props = {}
-
-        if callable(fetcher):
-            if iscoroutinefunction(fetcher):
-                data = await fetcher(req)
-            else:
-                data = fetcher(req)
-            props = data.get("props")
-
-        res = document(layout(fn(**props))).to_string()
-        return HTMLResponse(res)
+        props = await get_props(fetcher, req) 
+        container = lambda *args, **kwargs: document(layout(fn(*args, **kwargs)))
+        return render(container, props)
 
     return inner
 
+def exception_decorator(fn):
+    def inner(request, exc):
+        return render(fn, { "request": request, "exc": exc })
+
+    return inner
 
 class Builder():
     def __init__(self):
         self.routes = []
         self.cwd = os.getcwd()
         self.pages_dir = self.cwd + "/pages"
+        self.exception_handlers = {
+                404: exception_decorator(NotFound),
+                500: exception_decorator(Error)
+        }
 
     def fmt_url(self, root, f):
         """
@@ -58,7 +76,7 @@ class Builder():
             raise NotPageException
         
         url = Path(f"{root}/{f}").relative_to(self.pages_dir).with_suffix("")
-        return f"/{url}" 
+        return f"/{url}"
 
     def load_module(self, root, f):
         import_path = Path(f"{root}/{f}").relative_to(self.cwd).with_suffix("")
@@ -77,6 +95,10 @@ class Builder():
                 if f == "_document.py":
                     document = self.load_module(root, f).default
                     continue
+                if f == "_error.py":
+                    self.exception_handlers[404] = exception_decorator(self.load_module(root, f).default)
+                if f == "_not_found.py":
+                    self.exception_handlers[500] = exception_decorator(self.load_module(root, f).default)
 
             # handle pages + apis
             for f in files:
@@ -106,6 +128,9 @@ class Builder():
 
         return self.routes
 
+# TODO clean up how we call this thing.
 builder = Builder()
 routes = builder.get_routes()
-app = Starlette(debug=True, routes=routes)
+exception_handlers = builder.exception_handlers
+
+app = Starlette(debug=True, routes=routes, exception_handlers=exception_handlers)
